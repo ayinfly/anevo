@@ -4,8 +4,8 @@ import cv2
 import numpy as np
 
 
-WIDTH = 640
-HEIGHT = 480
+WIDTH = 1280
+HEIGHT = 720
 FRAMERATE = 30
 
 EXPECTED_IDS = set(range(26))
