@@ -1,9 +1,10 @@
 import time
 import cv2
 import numpy as np
-from picamera2 import Picamera2
 from evdev import UInput, ecodes as e
 
+
+CAMERA_INDEX = 0
 
 OUT_W, OUT_H = 900, 600
 
@@ -30,11 +31,6 @@ EVDEV_KEYS = {
 }
 
 
-def get_frame(picam2):
-    frame = picam2.capture_array()
-    return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-
 def order_points(pts):
     pts = np.array(pts, dtype="float32")
 
@@ -52,7 +48,6 @@ def order_points(pts):
 def find_corner_squares(frame):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-    # Assumes corner squares are dark/black.
     _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -93,6 +88,7 @@ def warp_keyboard(frame, corners):
 
     matrix = cv2.getPerspectiveTransform(corners, dst)
     warped = cv2.warpPerspective(frame, matrix, (OUT_W, OUT_H))
+
     return warped
 
 
@@ -163,22 +159,22 @@ def group_rows(dots, y_tol=35):
 def assign_keys_from_rows(rows):
     key_points = {}
 
-    # Space row is the row with exactly 2 dots.
     space_rows = [row for row in rows if len(row) == 2]
     letter_rows = [row for row in rows if len(row) != 2]
 
     if len(space_rows) != 1:
         print("Expected one space row with exactly 2 dots.")
+        print("Rows found:", [len(r) for r in rows])
         return None
 
-    # Sort letter rows top-to-bottom.
+    if len(letter_rows) != 3:
+        print("Expected 3 letter rows.")
+        print("Rows found:", [len(r) for r in rows])
+        return None
+
     letter_rows.sort(key=lambda row: sum(p[1] for p in row) / len(row))
 
     expected_counts = [10, 9, 7]
-
-    if len(letter_rows) != 3:
-        print("Expected 3 letter rows, but found", len(letter_rows))
-        return None
 
     for row, expected in zip(letter_rows, expected_counts):
         if len(row) != expected:
@@ -192,8 +188,6 @@ def assign_keys_from_rows(rows):
         for point, label in zip(row, labels):
             key_points[label] = point
 
-    # Two space dots both map to the same space key.
-    # If either space dot is covered, it will type space.
     space_points = sorted(space_rows[0], key=lambda p: p[0])
     key_points["space_1"] = space_points[0]
     key_points["space_2"] = space_points[1]
@@ -240,7 +234,7 @@ def draw_debug(warped, key_points, visible):
         cv2.putText(
             debug,
             key,
-            (x - 10, y - 20),
+            (x - 12, y - 20),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             color,
@@ -252,13 +246,14 @@ def draw_debug(warped, key_points, visible):
 
 
 def main():
-    picam2 = Picamera2()
-    picam2.configure(
-        picam2.create_preview_configuration(
-            main={"format": "RGB888", "size": (640, 480)}
-        )
-    )
-    picam2.start()
+    cap = cv2.VideoCapture(CAMERA_INDEX)
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+    if not cap.isOpened():
+        print("Could not open camera.")
+        return
 
     ui = UInput()
 
@@ -269,7 +264,12 @@ def main():
     print("Make sure all orange dots are visible for calibration.")
 
     while True:
-        frame = get_frame(picam2)
+        ret, frame = cap.read()
+
+        if not ret or frame is None:
+            print("Could not read frame.")
+            time.sleep(0.1)
+            continue
 
         corners = find_corner_squares(frame)
 
@@ -328,6 +328,8 @@ def main():
             locked = True
 
         time.sleep(0.03)
+
+    cap.release()
 
 
 if __name__ == "__main__":
