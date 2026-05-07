@@ -11,8 +11,8 @@ FRAMERATE = 30
 EXPECTED_DOTS = 26
 
 # Bright/highlighter pink HSV range
-PINK_LOWER = np.array([140, 50, 80])
-PINK_UPPER = np.array([175, 255, 255])
+PINK_LOWER = np.array([35, 50, 50])
+PINK_UPPER = np.array([90, 255, 255])
 
 # White paper HSV range
 WHITE_LOWER = np.array([0, 0, 150])
