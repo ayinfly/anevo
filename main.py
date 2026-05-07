@@ -8,8 +8,8 @@ WIDTH = 640
 HEIGHT = 480
 FRAMERATE = 30
 
-GREEN_LOWER = np.array([35, 60, 80])
-GREEN_UPPER = np.array([90, 255, 255])
+GREEN_LOWER = np.array([140, 50, 80])
+GREEN_UPPER = np.array([175, 255, 255])
 
 WHITE_LOWER = np.array([0, 0, 150])
 WHITE_UPPER = np.array([180, 80, 255])
