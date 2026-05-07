@@ -20,6 +20,16 @@ ID_TO_KEY = {
     19: "z", 20: "x", 21: "c", 22: "v", 23: "b", 24: "n", 25: "m",
 }
 
+KEY_TO_ID = {key: marker_id for marker_id, key in ID_TO_KEY.items()}
+
+KEY_PRIORITY = (
+    list("qwertyuiop")
+    + list("asdfghjkl")
+    + list("zxcvbnm")
+)
+
+ID_PRIORITY = [KEY_TO_ID[key] for key in KEY_PRIORITY]
+
 KEY_TO_EVDEV = {
     "q": e.KEY_Q, "w": e.KEY_W, "e": e.KEY_E, "r": e.KEY_R, "t": e.KEY_T,
     "y": e.KEY_Y, "u": e.KEY_U, "i": e.KEY_I, "o": e.KEY_O, "p": e.KEY_P,
@@ -176,6 +186,14 @@ def detect_aruco_inside_page(frame, page_box, aruco_obj):
     return visible_ids, marker_centers
 
 
+def get_frontmost_missing_id(missing_ids):
+    for marker_id in ID_PRIORITY:
+        if marker_id in missing_ids:
+            return marker_id
+
+    return None
+
+
 def send_key(ui, key):
     code = KEY_TO_EVDEV[key]
 
@@ -188,7 +206,17 @@ def send_key(ui, key):
     ui.syn()
 
 
-def draw_debug(frame, page_box, visible_ids, marker_centers, calibrated, calibration_start, missing_start):
+def draw_debug(
+    frame,
+    page_box,
+    visible_ids,
+    marker_centers,
+    calibrated,
+    calibration_start,
+    active_missing_id,
+    active_missing_start,
+    already_pressed,
+):
     debug = frame.copy()
 
     if page_box is not None:
@@ -219,6 +247,7 @@ def draw_debug(frame, page_box, visible_ids, marker_centers, calibrated, calibra
         else:
             status = f"show all markers: {found}/26"
         color = (0, 255, 255)
+
     else:
         status = f"ready found={found}/26 missing={len(missing_ids)}"
         color = (0, 255, 0) if len(missing_ids) == 0 else (0, 0, 255)
@@ -234,26 +263,25 @@ def draw_debug(frame, page_box, visible_ids, marker_centers, calibrated, calibra
         cv2.LINE_AA,
     )
 
-    if calibrated and missing_ids:
-        y = 80
-        for marker_id in sorted(missing_ids):
-            key = ID_TO_KEY[marker_id]
-            elapsed = 0
+    if calibrated and active_missing_id is not None:
+        key = ID_TO_KEY[active_missing_id]
+        elapsed = 0.0
 
-            if marker_id in missing_start:
-                elapsed = time.time() - missing_start[marker_id]
+        if active_missing_start is not None:
+            elapsed = time.time() - active_missing_start
 
-            cv2.putText(
-                debug,
-                f"missing {key}: {elapsed:.2f}s",
-                (20, y),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
-            y += 30
+        press_status = "pressed" if active_missing_id in already_pressed else "timing"
+
+        cv2.putText(
+            debug,
+            f"frontmost missing: {key} {elapsed:.2f}s {press_status}",
+            (20, 80),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
 
     return debug
 
@@ -262,6 +290,7 @@ def main():
     print("Starting ArUco keyboard input.")
     print("Show all 26 markers for 3 seconds to calibrate.")
     print("After calibration, cover a marker for 0.5 seconds to press that key.")
+    print("If multiple markers are missing, priority is QWERTY row, then ASDF row, then ZXCV row.")
     print("Press q in the debug window to quit.")
 
     aruco_obj = get_aruco_detector()
@@ -272,7 +301,9 @@ def main():
     calibrated_positions = {}
 
     calibration_start = None
-    missing_start = {}
+
+    active_missing_id = None
+    active_missing_start = None
     already_pressed = set()
 
     try:
@@ -284,6 +315,8 @@ def main():
             if page_box is None:
                 print("No white page found.")
                 calibration_start = None
+                active_missing_id = None
+                active_missing_start = None
 
                 cv2.imshow("debug", frame)
                 cv2.imshow("white page mask", page_mask)
@@ -301,51 +334,58 @@ def main():
                         calibration_start = now
                         print("All markers visible. Starting 3 second calibration timer.")
 
-                    elapsed = now - calibration_start
-
-                    if elapsed >= CALIBRATION_SECONDS:
+                    if now - calibration_start >= CALIBRATION_SECONDS:
                         calibrated = True
                         calibrated_positions = marker_centers.copy()
+
                         print("Calibration complete.")
                         print("Saved marker positions:")
+
                         for marker_id in sorted(calibrated_positions):
                             print(marker_id, ID_TO_KEY[marker_id], calibrated_positions[marker_id])
+
                 else:
                     calibration_start = None
                     print(f"Waiting for all markers. Found {len(visible_ids)}/26.")
 
             else:
                 missing_ids = EXPECTED_IDS - visible_ids
+                frontmost_missing_id = get_frontmost_missing_id(missing_ids)
 
-                for marker_id in EXPECTED_IDS:
+                if frontmost_missing_id is None:
+                    active_missing_id = None
+                    active_missing_start = None
+
+                else:
+                    if frontmost_missing_id != active_missing_id:
+                        active_missing_id = frontmost_missing_id
+                        active_missing_start = now
+
+                    key = ID_TO_KEY[active_missing_id]
+                    missing_time = now - active_missing_start
+
+                    if missing_time >= PRESS_SECONDS and active_missing_id not in already_pressed:
+                        print(f"Pressed {key}. Missing for {missing_time:.2f}s.")
+                        send_key(ui, key)
+                        already_pressed.add(active_missing_id)
+
+                visible_again = set(already_pressed) & visible_ids
+
+                for marker_id in visible_again:
                     key = ID_TO_KEY[marker_id]
-
-                    if marker_id in missing_ids:
-                        if marker_id not in missing_start:
-                            missing_start[marker_id] = now
-
-                        missing_time = now - missing_start[marker_id]
-
-                        if missing_time >= PRESS_SECONDS and marker_id not in already_pressed:
-                            print(f"Pressed {key}. Missing for {missing_time:.2f}s.")
-                            send_key(ui, key)
-                            already_pressed.add(marker_id)
-
-                    else:
-                        if marker_id in missing_start:
-                            del missing_start[marker_id]
-
-                        if marker_id in already_pressed:
-                            already_pressed.remove(marker_id)
+                    print(f"{key} visible again. Can press again.")
+                    already_pressed.remove(marker_id)
 
             debug = draw_debug(
-                frame,
-                page_box,
-                visible_ids,
-                marker_centers,
-                calibrated,
-                calibration_start,
-                missing_start,
+                frame=frame,
+                page_box=page_box,
+                visible_ids=visible_ids,
+                marker_centers=marker_centers,
+                calibrated=calibrated,
+                calibration_start=calibration_start,
+                active_missing_id=active_missing_id,
+                active_missing_start=active_missing_start,
+                already_pressed=already_pressed,
             )
 
             cv2.imshow("debug", debug)
