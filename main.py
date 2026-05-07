@@ -1,18 +1,25 @@
 import time
+import subprocess
 import cv2
 import numpy as np
 from evdev import UInput, ecodes as e
 
 
-CAMERA_INDEX = 0
+FRAME_PATH = "/tmp/keyboard_frame.jpg"
 
-OUT_W, OUT_H = 900, 600
+WIDTH = 640
+HEIGHT = 480
 
 ORANGE_LOWER = np.array([5, 80, 80])
 ORANGE_UPPER = np.array([30, 255, 255])
 
 DOT_RADIUS = 16
 VISIBLE_THRESHOLD = 35
+
+MIN_DOT_AREA = 20
+MAX_DOT_AREA = 2500
+
+ROW_Y_TOL = 35
 
 KEY_ROWS = [
     list("qwertyuiop"),
@@ -23,77 +30,45 @@ KEY_ROWS = [
 EVDEV_KEYS = {
     "q": e.KEY_Q, "w": e.KEY_W, "e": e.KEY_E, "r": e.KEY_R, "t": e.KEY_T,
     "y": e.KEY_Y, "u": e.KEY_U, "i": e.KEY_I, "o": e.KEY_O, "p": e.KEY_P,
+
     "a": e.KEY_A, "s": e.KEY_S, "d": e.KEY_D, "f": e.KEY_F, "g": e.KEY_G,
     "h": e.KEY_H, "j": e.KEY_J, "k": e.KEY_K, "l": e.KEY_L,
+
     "z": e.KEY_Z, "x": e.KEY_X, "c": e.KEY_C, "v": e.KEY_V, "b": e.KEY_B,
     "n": e.KEY_N, "m": e.KEY_M,
+
     "space": e.KEY_SPACE,
 }
 
 
-def order_points(pts):
-    pts = np.array(pts, dtype="float32")
+def capture_frame():
+    cmd = [
+        "rpicam-still",
+        "-n",
+        "--timeout", "100",
+        "--width", str(WIDTH),
+        "--height", str(HEIGHT),
+        "-o", FRAME_PATH,
+    ]
 
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1)
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-    top_left = pts[np.argmin(s)]
-    bottom_right = pts[np.argmax(s)]
-    top_right = pts[np.argmin(diff)]
-    bottom_left = pts[np.argmax(diff)]
-
-    return np.array([top_left, top_right, bottom_right, bottom_left], dtype="float32")
-
-
-def find_corner_squares(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    candidates = []
-
-    for c in contours:
-        area = cv2.contourArea(c)
-
-        if area < 200:
-            continue
-
-        x, y, w, h = cv2.boundingRect(c)
-        ratio = w / float(h)
-
-        if 0.55 < ratio < 1.8:
-            candidates.append((x, y, w, h, area))
-
-    if len(candidates) < 4:
+    if result.returncode != 0:
+        print("rpicam-still failed:")
+        print(result.stderr.decode(errors="ignore"))
         return None
 
-    candidates = sorted(candidates, key=lambda b: b[4], reverse=True)[:4]
+    frame = cv2.imread(FRAME_PATH)
 
-    centers = []
-    for x, y, w, h, area in candidates:
-        centers.append((x + w / 2, y + h / 2))
+    if frame is None:
+        print("cv2 could not read frame.")
+        return None
 
-    return order_points(centers)
-
-
-def warp_keyboard(frame, corners):
-    dst = np.array([
-        [0, 0],
-        [OUT_W - 1, 0],
-        [OUT_W - 1, OUT_H - 1],
-        [0, OUT_H - 1],
-    ], dtype="float32")
-
-    matrix = cv2.getPerspectiveTransform(corners, dst)
-    warped = cv2.warpPerspective(frame, matrix, (OUT_W, OUT_H))
-
-    return warped
+    return frame
 
 
-def orange_mask(warped):
-    hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
+def orange_mask(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
     mask = cv2.inRange(hsv, ORANGE_LOWER, ORANGE_UPPER)
 
@@ -103,8 +78,8 @@ def orange_mask(warped):
     return mask
 
 
-def find_orange_dots(warped):
-    mask = orange_mask(warped)
+def find_orange_dots(frame):
+    mask = orange_mask(frame)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -113,7 +88,7 @@ def find_orange_dots(warped):
     for c in contours:
         area = cv2.contourArea(c)
 
-        if 20 < area < 2500:
+        if MIN_DOT_AREA < area < MAX_DOT_AREA:
             M = cv2.moments(c)
 
             if M["m00"] == 0:
@@ -127,26 +102,26 @@ def find_orange_dots(warped):
     return dots, mask
 
 
-def group_rows(dots, y_tol=35):
+def group_rows(dots):
     points = [(x, y) for x, y, area in dots]
     points = sorted(points, key=lambda p: p[1])
 
     rows = []
 
-    for p in points:
-        x, y = p
+    for point in points:
+        x, y = point
         placed = False
 
         for row in rows:
-            avg_y = sum(pt[1] for pt in row) / len(row)
+            avg_y = sum(p[1] for p in row) / len(row)
 
-            if abs(y - avg_y) < y_tol:
-                row.append(p)
+            if abs(y - avg_y) < ROW_Y_TOL:
+                row.append(point)
                 placed = True
                 break
 
         if not placed:
-            rows.append([p])
+            rows.append([point])
 
     for row in rows:
         row.sort(key=lambda p: p[0])
@@ -162,14 +137,14 @@ def assign_keys_from_rows(rows):
     space_rows = [row for row in rows if len(row) == 2]
     letter_rows = [row for row in rows if len(row) != 2]
 
+    print("Rows found:", [len(row) for row in rows])
+
     if len(space_rows) != 1:
-        print("Expected one space row with exactly 2 dots.")
-        print("Rows found:", [len(r) for r in rows])
+        print("Expected exactly one row with 2 spacebar dots.")
         return None
 
     if len(letter_rows) != 3:
-        print("Expected 3 letter rows.")
-        print("Rows found:", [len(r) for r in rows])
+        print("Expected exactly 3 letter rows.")
         return None
 
     letter_rows.sort(key=lambda row: sum(p[1] for p in row) / len(row))
@@ -178,8 +153,9 @@ def assign_keys_from_rows(rows):
 
     for row, expected in zip(letter_rows, expected_counts):
         if len(row) != expected:
-            print("Bad row count. Expected", expected, "but got", len(row))
-            print("Rows found:", [len(r) for r in rows])
+            print("Bad row count.")
+            print("Expected:", expected)
+            print("Got:", len(row))
             return None
 
     for row, labels in zip(letter_rows, KEY_ROWS):
@@ -204,6 +180,7 @@ def dot_visible(mask, point):
     y2 = min(mask.shape[0], y + DOT_RADIUS)
 
     roi = mask[y1:y2, x1:x2]
+
     orange_pixels = cv2.countNonZero(roi)
 
     return orange_pixels > VISIBLE_THRESHOLD
@@ -224,11 +201,14 @@ def send_key(ui, key):
     ui.syn()
 
 
-def draw_debug(warped, key_points, visible):
-    debug = warped.copy()
+def draw_debug(frame, key_points, visible):
+    debug = frame.copy()
 
     for key, (x, y) in key_points.items():
-        color = (0, 255, 0) if visible.get(key, True) else (0, 0, 255)
+        if visible.get(key, True):
+            color = (0, 255, 0)
+        else:
+            color = (0, 0, 255)
 
         cv2.circle(debug, (x, y), DOT_RADIUS, color, 2)
         cv2.putText(
@@ -246,15 +226,6 @@ def draw_debug(warped, key_points, visible):
 
 
 def main():
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-    if not cap.isOpened():
-        print("Could not open camera.")
-        return
-
     ui = UInput()
 
     key_points = None
@@ -264,27 +235,22 @@ def main():
     print("Make sure all orange dots are visible for calibration.")
 
     while True:
-        ret, frame = cap.read()
+        frame = capture_frame()
 
-        if not ret or frame is None:
-            print("Could not read frame.")
-            time.sleep(0.1)
-            continue
-
-        corners = find_corner_squares(frame)
-
-        if corners is None:
-            print("Could not find 4 corner squares.")
+        if frame is None:
+            print("Could not capture frame.")
             time.sleep(0.2)
             continue
 
-        warped = warp_keyboard(frame, corners)
-        dots, mask = find_orange_dots(warped)
+        dots, mask = find_orange_dots(frame)
+
+        print("Orange dots found:", len(dots))
+
+        cv2.imwrite("debug_frame.jpg", frame)
+        cv2.imwrite("debug_orange_mask.jpg", mask)
 
         if key_points is None:
             rows = group_rows(dots)
-            print("Rows found:", [len(r) for r in rows])
-
             key_points = assign_keys_from_rows(rows)
 
             if key_points is None:
@@ -293,18 +259,19 @@ def main():
                 continue
 
             print("Calibrated keys:")
+
             for key, point in key_points.items():
                 print(key, point)
 
             print("Ready.")
-            cv2.imwrite("calibrated_keyboard.jpg", warped)
+            cv2.imwrite("calibrated_keyboard.jpg", frame)
 
         visible = {
             key: dot_visible(mask, point)
             for key, point in key_points.items()
         }
 
-        draw_debug(warped, key_points, visible)
+        draw_debug(frame, key_points, visible)
 
         all_visible = all(visible.values())
 
@@ -312,7 +279,8 @@ def main():
             if all_visible:
                 locked = False
                 print("Reset. Ready for next key.")
-            time.sleep(0.03)
+
+            time.sleep(0.05)
             continue
 
         missing = [key for key in key_points if not visible[key]]
@@ -327,9 +295,7 @@ def main():
             send_key(ui, pressed)
             locked = True
 
-        time.sleep(0.03)
-
-    cap.release()
+        time.sleep(0.05)
 
 
 if __name__ == "__main__":
