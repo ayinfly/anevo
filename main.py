@@ -2,11 +2,15 @@ import subprocess
 import time
 import cv2
 import numpy as np
+from evdev import UInput, ecodes as e
 
 
 WIDTH = 1280
 HEIGHT = 720
-FRAMERATE = 30
+FRAMERATE = 15
+
+CALIBRATION_SECONDS = 3.0
+PRESS_SECONDS = 0.5
 
 EXPECTED_IDS = set(range(26))
 
@@ -16,9 +20,17 @@ ID_TO_KEY = {
     19: "z", 20: "x", 21: "c", 22: "v", 23: "b", 24: "n", 25: "m",
 }
 
+KEY_TO_EVDEV = {
+    "q": e.KEY_Q, "w": e.KEY_W, "e": e.KEY_E, "r": e.KEY_R, "t": e.KEY_T,
+    "y": e.KEY_Y, "u": e.KEY_U, "i": e.KEY_I, "o": e.KEY_O, "p": e.KEY_P,
+    "a": e.KEY_A, "s": e.KEY_S, "d": e.KEY_D, "f": e.KEY_F, "g": e.KEY_G,
+    "h": e.KEY_H, "j": e.KEY_J, "k": e.KEY_K, "l": e.KEY_L,
+    "z": e.KEY_Z, "x": e.KEY_X, "c": e.KEY_C, "v": e.KEY_V, "b": e.KEY_B,
+    "n": e.KEY_N, "m": e.KEY_M,
+}
+
 WHITE_LOWER = np.array([0, 0, 150])
 WHITE_UPPER = np.array([180, 80, 255])
-
 MIN_PAGE_AREA = 10000
 
 
@@ -113,13 +125,11 @@ def find_white_page(frame):
 def get_aruco_detector():
     dictionary = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
 
-    # Newer OpenCV API
     if hasattr(cv2.aruco, "ArucoDetector"):
         params = cv2.aruco.DetectorParameters()
         detector = cv2.aruco.ArucoDetector(dictionary, params)
         return dictionary, detector
 
-    # Older OpenCV API
     params = cv2.aruco.DetectorParameters_create()
     return dictionary, params
 
@@ -153,9 +163,7 @@ def detect_aruco_inside_page(frame, page_box, aruco_obj):
             if marker_id not in EXPECTED_IDS:
                 continue
 
-            pts = corners[i][0]
-
-            # Convert ROI coords back to full-frame coords
+            pts = corners[i][0].copy()
             pts[:, 0] += x
             pts[:, 1] += y
 
@@ -165,30 +173,30 @@ def detect_aruco_inside_page(frame, page_box, aruco_obj):
             visible_ids.add(marker_id)
             marker_centers[marker_id] = (cx, cy)
 
-    return visible_ids, marker_centers, corners, ids
+    return visible_ids, marker_centers
 
 
-def draw_debug(frame, page_box, visible_ids, marker_centers):
+def send_key(ui, key):
+    code = KEY_TO_EVDEV[key]
+
+    ui.write(e.EV_KEY, code, 1)
+    ui.syn()
+
+    time.sleep(0.04)
+
+    ui.write(e.EV_KEY, code, 0)
+    ui.syn()
+
+
+def draw_debug(frame, page_box, visible_ids, marker_centers, calibrated, calibration_start, missing_start):
     debug = frame.copy()
 
     if page_box is not None:
         x, y, w, h, area = page_box
-
         cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 0, 0), 2)
-        cv2.putText(
-            debug,
-            f"page area={area:.0f}",
-            (x, max(20, y - 8)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 0, 0),
-            2,
-            cv2.LINE_AA,
-        )
 
     for marker_id, (cx, cy) in marker_centers.items():
-        key = ID_TO_KEY.get(marker_id, "?")
-
+        key = ID_TO_KEY[marker_id]
         cv2.circle(debug, (cx, cy), 18, (0, 255, 0), 2)
         cv2.putText(
             debug,
@@ -201,15 +209,23 @@ def draw_debug(frame, page_box, visible_ids, marker_centers):
             cv2.LINE_AA,
         )
 
-    missing_ids = EXPECTED_IDS - visible_ids
     found = len(visible_ids)
-    missing = len(missing_ids)
+    missing_ids = EXPECTED_IDS - visible_ids
 
-    color = (0, 255, 0) if missing == 0 else (0, 0, 255)
+    if not calibrated:
+        if found == 26 and calibration_start is not None:
+            remaining = max(0, CALIBRATION_SECONDS - (time.time() - calibration_start))
+            status = f"calibrating... {remaining:.1f}s"
+        else:
+            status = f"show all markers: {found}/26"
+        color = (0, 255, 255)
+    else:
+        status = f"ready found={found}/26 missing={len(missing_ids)}"
+        color = (0, 255, 0) if len(missing_ids) == 0 else (0, 0, 255)
 
     cv2.putText(
         debug,
-        f"found={found}/26 missing={missing}",
+        status,
         (20, 40),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.9,
@@ -218,42 +234,58 @@ def draw_debug(frame, page_box, visible_ids, marker_centers):
         cv2.LINE_AA,
     )
 
+    if calibrated and missing_ids:
+        y = 80
+        for marker_id in sorted(missing_ids):
+            key = ID_TO_KEY[marker_id]
+            elapsed = 0
+
+            if marker_id in missing_start:
+                elapsed = time.time() - missing_start[marker_id]
+
+            cv2.putText(
+                debug,
+                f"missing {key}: {elapsed:.2f}s",
+                (20, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 0, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            y += 30
+
     return debug
 
 
 def main():
-    print("Starting ArUco keyboard detector.")
-    print("Expected marker IDs: 0-25")
+    print("Starting ArUco keyboard input.")
+    print("Show all 26 markers for 3 seconds to calibrate.")
+    print("After calibration, cover a marker for 0.5 seconds to press that key.")
     print("Press q in the debug window to quit.")
 
     aruco_obj = get_aruco_detector()
     proc = start_camera()
+    ui = UInput()
 
-    frame_count = 0
-    start_time = time.time()
+    calibrated = False
+    calibrated_positions = {}
+
+    calibration_start = None
+    missing_start = {}
+    already_pressed = set()
 
     try:
         for frame in mjpeg_frames(proc):
-            frame_count += 1
+            now = time.time()
 
             page_box, page_mask = find_white_page(frame)
 
             if page_box is None:
                 print("No white page found.")
+                calibration_start = None
 
-                debug = frame.copy()
-                cv2.putText(
-                    debug,
-                    "No white page found",
-                    (20, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    1.0,
-                    (0, 0, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-
-                cv2.imshow("debug", debug)
+                cv2.imshow("debug", frame)
                 cv2.imshow("white page mask", page_mask)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -261,30 +293,63 @@ def main():
 
                 continue
 
-            visible_ids, marker_centers, corners, ids = detect_aruco_inside_page(
+            visible_ids, marker_centers = detect_aruco_inside_page(frame, page_box, aruco_obj)
+
+            if not calibrated:
+                if visible_ids == EXPECTED_IDS:
+                    if calibration_start is None:
+                        calibration_start = now
+                        print("All markers visible. Starting 3 second calibration timer.")
+
+                    elapsed = now - calibration_start
+
+                    if elapsed >= CALIBRATION_SECONDS:
+                        calibrated = True
+                        calibrated_positions = marker_centers.copy()
+                        print("Calibration complete.")
+                        print("Saved marker positions:")
+                        for marker_id in sorted(calibrated_positions):
+                            print(marker_id, ID_TO_KEY[marker_id], calibrated_positions[marker_id])
+                else:
+                    calibration_start = None
+                    print(f"Waiting for all markers. Found {len(visible_ids)}/26.")
+
+            else:
+                missing_ids = EXPECTED_IDS - visible_ids
+
+                for marker_id in EXPECTED_IDS:
+                    key = ID_TO_KEY[marker_id]
+
+                    if marker_id in missing_ids:
+                        if marker_id not in missing_start:
+                            missing_start[marker_id] = now
+
+                        missing_time = now - missing_start[marker_id]
+
+                        if missing_time >= PRESS_SECONDS and marker_id not in already_pressed:
+                            print(f"Pressed {key}. Missing for {missing_time:.2f}s.")
+                            send_key(ui, key)
+                            already_pressed.add(marker_id)
+
+                    else:
+                        if marker_id in missing_start:
+                            del missing_start[marker_id]
+
+                        if marker_id in already_pressed:
+                            already_pressed.remove(marker_id)
+
+            debug = draw_debug(
                 frame,
                 page_box,
-                aruco_obj,
+                visible_ids,
+                marker_centers,
+                calibrated,
+                calibration_start,
+                missing_start,
             )
-
-            missing_ids = EXPECTED_IDS - visible_ids
-            missing_keys = [ID_TO_KEY[i] for i in sorted(missing_ids)]
-
-            print(
-                f"ArUco found: {len(visible_ids)}/26, "
-                f"missing: {len(missing_ids)}, "
-                f"missing keys: {missing_keys}"
-            )
-
-            debug = draw_debug(frame, page_box, visible_ids, marker_centers)
 
             cv2.imshow("debug", debug)
             cv2.imshow("white page mask", page_mask)
-
-            if frame_count % 30 == 0:
-                elapsed = time.time() - start_time
-                fps = frame_count / elapsed if elapsed > 0 else 0
-                print(f"FPS: {fps:.1f}")
 
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
