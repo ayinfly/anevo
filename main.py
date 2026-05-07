@@ -8,14 +8,19 @@ WIDTH = 640
 HEIGHT = 480
 FRAMERATE = 30
 
-GREEN_LOWER = np.array([140, 50, 80])
-GREEN_UPPER = np.array([175, 255, 255])
+EXPECTED_DOTS = 26
 
+# Bright/highlighter pink HSV range
+PINK_LOWER = np.array([140, 50, 80])
+PINK_UPPER = np.array([175, 255, 255])
+
+# White paper HSV range
 WHITE_LOWER = np.array([0, 0, 150])
 WHITE_UPPER = np.array([180, 80, 255])
 
 MIN_DOT_AREA = 20
 MAX_DOT_AREA = 5000
+
 MIN_PAGE_AREA = 10000
 
 
@@ -107,14 +112,14 @@ def find_white_page(frame):
     return (x, y, w, h, area), mask
 
 
-def green_mask_inside_page(frame, page_box):
+def pink_mask_inside_page(frame, page_box):
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    full_green_mask = cv2.inRange(hsv, GREEN_LOWER, GREEN_UPPER)
+    full_pink_mask = cv2.inRange(hsv, PINK_LOWER, PINK_UPPER)
 
-    page_only_mask = np.zeros_like(full_green_mask)
+    page_only_mask = np.zeros_like(full_pink_mask)
 
     x, y, w, h, area = page_box
-    page_only_mask[y:y+h, x:x+w] = full_green_mask[y:y+h, x:x+w]
+    page_only_mask[y:y+h, x:x+w] = full_pink_mask[y:y+h, x:x+w]
 
     page_only_mask = cv2.erode(page_only_mask, None, iterations=1)
     page_only_mask = cv2.dilate(page_only_mask, None, iterations=2)
@@ -122,8 +127,8 @@ def green_mask_inside_page(frame, page_box):
     return page_only_mask
 
 
-def find_green_dot_inside_page(frame, page_box):
-    mask = green_mask_inside_page(frame, page_box)
+def find_pink_dots_inside_page(frame, page_box):
+    mask = pink_mask_inside_page(frame, page_box)
 
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -145,14 +150,12 @@ def find_green_dot_inside_page(frame, page_box):
 
         dots.append((cx, cy, area))
 
-    if not dots:
-        return None, mask, dots
+    dots.sort(key=lambda p: (p[1], p[0]))
 
-    dots.sort(key=lambda p: p[2], reverse=True)
-    return dots[0], mask, dots
+    return dots, mask
 
 
-def draw_debug(frame, page_box, dot, all_dots):
+def draw_debug(frame, page_box, dots):
     debug = frame.copy()
 
     if page_box is not None:
@@ -170,39 +173,44 @@ def draw_debug(frame, page_box, dot, all_dots):
             cv2.LINE_AA,
         )
 
-    for i, (x, y, area) in enumerate(all_dots):
-        cv2.circle(debug, (x, y), 15, (0, 255, 255), 2)
+    for i, (x, y, area) in enumerate(dots):
+        cv2.circle(debug, (x, y), 15, (255, 0, 255), 2)
         cv2.putText(
             debug,
-            f"{i}: {area:.0f}",
+            f"{i}",
             (x + 10, y - 10),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.45,
-            (0, 255, 255),
+            (255, 0, 255),
             1,
             cv2.LINE_AA,
         )
 
-    if dot is not None:
-        x, y, area = dot
+    found = len(dots)
+    missing = max(0, EXPECTED_DOTS - found)
 
-        cv2.circle(debug, (x, y), 20, (0, 255, 0), 3)
-        cv2.putText(
-            debug,
-            f"dot ({x}, {y})",
-            (x - 40, y - 25),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
-        )
+    if missing == 0:
+        color = (0, 255, 0)
+    else:
+        color = (0, 0, 255)
+
+    cv2.putText(
+        debug,
+        f"found={found}/{EXPECTED_DOTS} missing={missing}",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
 
     return debug
 
 
 def main():
-    print("Starting live green dot detector.")
+    print("Starting pink dot detector.")
+    print("Expected dots:", EXPECTED_DOTS)
     print("Press q in the debug window to quit.")
 
     proc = start_camera()
@@ -239,18 +247,17 @@ def main():
 
                 continue
 
-            dot, green_mask, all_dots = find_green_dot_inside_page(frame, page_box)
+            dots, pink_mask = find_pink_dots_inside_page(frame, page_box)
 
-            if dot is None:
-                print("No green dot found inside page.")
-            else:
-                x, y, area = dot
-                print(f"Green dot coords: x={x}, y={y}, area={area:.1f}")
+            found = len(dots)
+            missing = max(0, EXPECTED_DOTS - found)
 
-            debug = draw_debug(frame, page_box, dot, all_dots)
+            print(f"Pink dots found: {found}/{EXPECTED_DOTS}, missing: {missing}")
+
+            debug = draw_debug(frame, page_box, dots)
 
             cv2.imshow("debug", debug)
-            cv2.imshow("green mask inside page", green_mask)
+            cv2.imshow("pink mask inside page", pink_mask)
             cv2.imshow("white page mask", page_mask)
 
             if frame_count % 30 == 0:
