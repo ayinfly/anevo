@@ -186,14 +186,6 @@ def detect_aruco_inside_page(frame, page_box, aruco_obj):
     return visible_ids, marker_centers
 
 
-def get_frontmost_missing_id(missing_ids):
-    for marker_id in ID_PRIORITY:
-        if marker_id in missing_ids:
-            return marker_id
-
-    return None
-
-
 def send_key(ui, key):
     code = KEY_TO_EVDEV[key]
 
@@ -213,8 +205,7 @@ def draw_debug(
     marker_centers,
     calibrated,
     calibration_start,
-    active_missing_id,
-    active_missing_start,
+    missing_since,
     already_pressed,
 ):
     debug = frame.copy()
@@ -263,18 +254,21 @@ def draw_debug(
         cv2.LINE_AA,
     )
 
-    if calibrated and active_missing_id is not None:
-        key = ID_TO_KEY[active_missing_id]
-        elapsed = 0.0
+    if calibrated and missing_since:
+        active_labels = []
 
-        if active_missing_start is not None:
-            elapsed = time.time() - active_missing_start
+        for marker_id in ID_PRIORITY:
+            if marker_id not in missing_since:
+                continue
 
-        press_status = "pressed" if active_missing_id in already_pressed else "timing"
+            key = ID_TO_KEY[marker_id]
+            elapsed = time.time() - missing_since[marker_id]
+            press_status = "pressed" if marker_id in already_pressed else "timing"
+            active_labels.append(f"{key}:{elapsed:.2f}s {press_status}")
 
         cv2.putText(
             debug,
-            f"frontmost missing: {key} {elapsed:.2f}s {press_status}",
+            "missing: " + "  ".join(active_labels[:8]),
             (20, 80),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.75,
@@ -290,7 +284,7 @@ def main():
     print("Starting ArUco keyboard input.")
     print("Show all 26 markers for 3 seconds to calibrate.")
     print("After calibration, cover a marker for 0.5 seconds to press that key.")
-    print("If multiple markers are missing, priority is QWERTY row, then ASDF row, then ZXCV row.")
+    print("Multiple covered markers can press at the same time.")
     print("Press q in the debug window to quit.")
 
     aruco_obj = get_aruco_detector()
@@ -302,8 +296,7 @@ def main():
 
     calibration_start = None
 
-    active_missing_id = None
-    active_missing_start = None
+    missing_since = {}
     already_pressed = set()
 
     try:
@@ -315,8 +308,7 @@ def main():
             if page_box is None:
                 print("No white page found.")
                 calibration_start = None
-                active_missing_id = None
-                active_missing_start = None
+                missing_since.clear()
 
                 cv2.imshow("debug", frame)
                 cv2.imshow("white page mask", page_mask)
@@ -350,24 +342,27 @@ def main():
 
             else:
                 missing_ids = EXPECTED_IDS - visible_ids
-                frontmost_missing_id = get_frontmost_missing_id(missing_ids)
 
-                if frontmost_missing_id is None:
-                    active_missing_id = None
-                    active_missing_start = None
+                for marker_id in missing_ids:
+                    if marker_id not in missing_since:
+                        missing_since[marker_id] = now
 
-                else:
-                    if frontmost_missing_id != active_missing_id:
-                        active_missing_id = frontmost_missing_id
-                        active_missing_start = now
+                visible_or_unknown = set(missing_since) - missing_ids
 
-                    key = ID_TO_KEY[active_missing_id]
-                    missing_time = now - active_missing_start
+                for marker_id in visible_or_unknown:
+                    missing_since.pop(marker_id, None)
 
-                    if missing_time >= PRESS_SECONDS and active_missing_id not in already_pressed:
+                for marker_id in ID_PRIORITY:
+                    if marker_id not in missing_since or marker_id in already_pressed:
+                        continue
+
+                    key = ID_TO_KEY[marker_id]
+                    missing_time = now - missing_since[marker_id]
+
+                    if missing_time >= PRESS_SECONDS:
                         print(f"Pressed {key}. Missing for {missing_time:.2f}s.")
                         send_key(ui, key)
-                        already_pressed.add(active_missing_id)
+                        already_pressed.add(marker_id)
 
                 visible_again = set(already_pressed) & visible_ids
 
@@ -383,8 +378,7 @@ def main():
                 marker_centers=marker_centers,
                 calibrated=calibrated,
                 calibration_start=calibration_start,
-                active_missing_id=active_missing_id,
-                active_missing_start=active_missing_start,
+                missing_since=missing_since,
                 already_pressed=already_pressed,
             )
 
