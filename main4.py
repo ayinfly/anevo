@@ -218,6 +218,7 @@ def draw_debug(
     active_missing_id,
     active_missing_start,
     already_pressed,
+    fps,
 ):
     debug = frame.copy()
 
@@ -265,6 +266,17 @@ def draw_debug(
         cv2.LINE_AA,
     )
 
+    cv2.putText(
+        debug,
+        f"FPS: {fps:.1f}",
+        (20, 120),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
     if calibrated and active_missing_id is not None:
         key = ID_TO_KEY[active_missing_id]
         elapsed = 0.0
@@ -307,10 +319,21 @@ def main():
     active_missing_id = None
     active_missing_start = None
     already_pressed = set()
+    last_frame_time = None
+    fps = 0.0
 
     try:
         for frame in mjpeg_frames(proc):
             now = time.time()
+
+            if last_frame_time is not None:
+                delta = now - last_frame_time
+
+                if delta > 0:
+                    current_fps = 1.0 / delta
+                    fps = current_fps if fps == 0.0 else fps * 0.9 + current_fps * 0.1
+
+            last_frame_time = now
 
             page_box, page_mask = find_white_page(frame)
 
@@ -320,7 +343,19 @@ def main():
                 active_missing_id = None
                 active_missing_start = None
 
-                cv2.imshow("debug", frame)
+                debug = frame.copy()
+                cv2.putText(
+                    debug,
+                    f"FPS: {fps:.1f}",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+
+                cv2.imshow("debug", debug)
                 cv2.imshow("white page mask", page_mask)
 
                 if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -388,6 +423,7 @@ def main():
                 active_missing_id=active_missing_id,
                 active_missing_start=active_missing_start,
                 already_pressed=already_pressed,
+                fps=fps,
             )
 
             cv2.imshow("debug", debug)
