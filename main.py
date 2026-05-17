@@ -10,7 +10,7 @@ HEIGHT = 720
 FRAMERATE = 30
 
 CALIBRATION_SECONDS = 3.0
-PRESS_SECONDS = 0.1
+PRESS_SECONDS = 0.5
 
 EXPECTED_IDS = set(range(26))
 
@@ -206,13 +206,105 @@ def send_key(ui, key):
     ui.syn()
 
 
+def draw_debug(
+    frame,
+    page_box,
+    visible_ids,
+    marker_centers,
+    calibrated,
+    calibration_start,
+    active_missing_id,
+    active_missing_start,
+    already_pressed,
+    fps,
+):
+    debug = frame.copy()
+
+    if page_box is not None:
+        x, y, w, h, area = page_box
+        cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 0, 0), 2)
+
+    for marker_id, (cx, cy) in marker_centers.items():
+        key = ID_TO_KEY[marker_id]
+        cv2.circle(debug, (cx, cy), 18, (0, 255, 0), 2)
+        cv2.putText(
+            debug,
+            f"{key}:{marker_id}",
+            (cx - 20, cy - 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+    found = len(visible_ids)
+    missing_ids = EXPECTED_IDS - visible_ids
+
+    if not calibrated:
+        if found == 26 and calibration_start is not None:
+            remaining = max(0, CALIBRATION_SECONDS - (time.time() - calibration_start))
+            status = f"calibrating... {remaining:.1f}s"
+        else:
+            status = f"show all markers: {found}/26"
+        color = (0, 255, 255)
+
+    else:
+        status = f"ready found={found}/26 missing={len(missing_ids)}"
+        color = (0, 255, 0) if len(missing_ids) == 0 else (0, 0, 255)
+
+    cv2.putText(
+        debug,
+        status,
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.9,
+        color,
+        2,
+        cv2.LINE_AA,
+    )
+
+    cv2.putText(
+        debug,
+        f"FPS: {fps:.1f}",
+        (20, 80),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.75,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    if calibrated and active_missing_id is not None:
+        key = ID_TO_KEY[active_missing_id]
+        elapsed = 0.0
+
+        if active_missing_start is not None:
+            elapsed = time.time() - active_missing_start
+
+        press_status = "pressed" if active_missing_id in already_pressed else "timing"
+
+        cv2.putText(
+            debug,
+            f"frontmost missing: {key} {elapsed:.2f}s {press_status}",
+            (20, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.75,
+            (0, 0, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return debug
+
+
 def main():
     print("Starting ArUco keyboard input.")
     print("Show all 26 markers for 3 seconds to calibrate.")
     print("After calibration, cover a marker for 0.5 seconds to press that key.")
     print("If multiple markers are missing, priority is QWERTY row, then ASDF row, then ZXCV row.")
-    print("Debug windows are disabled.")
-    print("Press Ctrl+C to quit.")
+    print("Only main video window is enabled.")
+    print("Press q in the video window or Ctrl+C to quit.")
 
     aruco_obj = get_aruco_detector()
     proc = start_camera()
@@ -258,6 +350,11 @@ def main():
                 if now - last_status_print >= 1.0:
                     print("No white page found.")
                     last_status_print = now
+
+                cv2.imshow("keyboard view", frame)
+
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    break
 
                 continue
 
@@ -313,6 +410,24 @@ def main():
                     key = ID_TO_KEY[marker_id]
                     print(f"{key} visible again. Can press again.")
                     already_pressed.remove(marker_id)
+
+            debug = draw_debug(
+                frame=frame,
+                page_box=page_box,
+                visible_ids=visible_ids,
+                marker_centers=marker_centers,
+                calibrated=calibrated,
+                calibration_start=calibration_start,
+                active_missing_id=active_missing_id,
+                active_missing_start=active_missing_start,
+                already_pressed=already_pressed,
+                fps=fps,
+            )
+
+            cv2.imshow("keyboard view", debug)
+
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                break
 
     except KeyboardInterrupt:
         print("Stopping.")
