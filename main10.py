@@ -13,9 +13,8 @@ HEIGHT = 360
 FRAMERATE = 30
 
 CALIBRATION_SECONDS = 3.0
-PRESS_SECONDS = 0.07
+PRESS_SECONDS = 0.1
 KEY_HOLD_SECONDS = 0.025
-DETAILED_DEBUG = False
 
 # After calibration, the page is usually stationary. Reusing the last page box
 # avoids a full HSV/contour page search on most frames, while periodic rescans
@@ -395,19 +394,6 @@ def apply_spacebar_press_rule(missing_buttons):
     return missing_buttons
 
 
-def get_clean_pressed_button(missing_buttons):
-    if missing_buttons == SPACE_BUTTON_NAMES:
-        return "space_left"
-
-    if missing_buttons & SPACE_BUTTON_NAMES:
-        return None
-
-    if len(missing_buttons) == 1:
-        return next(iter(missing_buttons))
-
-    return None
-
-
 def get_frontmost_missing_button(missing_buttons):
     for button_name in BUTTON_PRIORITY:
         if button_name in missing_buttons:
@@ -484,37 +470,36 @@ def draw_debug(
         x, y, w, h, area = page_box
         cv2.rectangle(debug, (x, y), (x + w, y + h), (255, 0, 0), 2)
 
-    if DETAILED_DEBUG:
-        # Draw raw detections in gray/white first.
-        for d in detections:
-            marker_id = d["id"]
-            cx, cy = d["center"]
-            cv2.circle(debug, (cx, cy), 12, (200, 200, 200), 1)
-            cv2.putText(
-                debug,
-                f"id:{marker_id}",
-                (cx - 20, cy - 25),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (200, 200, 200),
-                1,
-                cv2.LINE_AA,
-            )
+    # Draw raw detections in gray/white first.
+    for d in detections:
+        marker_id = d["id"]
+        cx, cy = d["center"]
+        cv2.circle(debug, (cx, cy), 12, (200, 200, 200), 1)
+        cv2.putText(
+            debug,
+            f"id:{marker_id}",
+            (cx - 20, cy - 25),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
 
-        # Draw matched physical buttons in green.
-        for button_name, (cx, cy) in button_centers.items():
-            button = BUTTON_BY_NAME[button_name]
-            cv2.circle(debug, (cx, cy), 18, (0, 255, 0), 2)
-            cv2.putText(
-                debug,
-                button.label,
-                (cx - 35, cy + 35),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (0, 255, 0),
-                1,
-                cv2.LINE_AA,
-            )
+    # Draw matched physical buttons in green.
+    for button_name, (cx, cy) in button_centers.items():
+        button = BUTTON_BY_NAME[button_name]
+        cv2.circle(debug, (cx, cy), 18, (0, 255, 0), 2)
+        cv2.putText(
+            debug,
+            button.label,
+            (cx - 35, cy + 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
 
     found_buttons = len(visible_buttons)
     missing_buttons = apply_spacebar_press_rule(
@@ -588,18 +573,6 @@ def draw_debug(
             cv2.FONT_HERSHEY_SIMPLEX,
             0.75,
             (0, 0, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
-    elif calibrated and len(missing_buttons) > 1:
-        cv2.putText(
-            debug,
-            f"ignored messy press: {len(missing_buttons)} covered keys",
-            (20, 160),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.75,
-            (0, 165, 255),
             2,
             cv2.LINE_AA,
         )
@@ -780,15 +753,15 @@ def main():
                 missing_buttons = apply_spacebar_press_rule(
                     set(BUTTON_BY_NAME.keys()) - visible_buttons
                 )
-                clean_pressed_button = get_clean_pressed_button(missing_buttons)
+                frontmost_missing_button = get_frontmost_missing_button(missing_buttons)
 
-                if clean_pressed_button is None:
+                if frontmost_missing_button is None:
                     active_button_name = None
                     active_missing_start = None
 
                 else:
-                    if clean_pressed_button != active_button_name:
-                        active_button_name = clean_pressed_button
+                    if frontmost_missing_button != active_button_name:
+                        active_button_name = frontmost_missing_button
                         active_missing_start = now
 
                     button = BUTTON_BY_NAME[active_button_name]
