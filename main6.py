@@ -8,12 +8,12 @@ import numpy as np
 from evdev import UInput, ecodes as e
 
 
-WIDTH = 1280
-HEIGHT = 720
+WIDTH = 640
+HEIGHT = 360
 FRAMERATE = 30
 
 CALIBRATION_SECONDS = 3.0
-PRESS_SECONDS = 0.5
+PRESS_SECONDS = 0.1
 
 # Used only when the same ArUco id appears more than once on the page.
 # Example: if both spacebar markers are the same printed marker, this lets the
