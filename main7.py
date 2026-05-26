@@ -8,12 +8,12 @@ import numpy as np
 from evdev import UInput, ecodes as e
 
 
-WIDTH = 1280
-HEIGHT = 720
+WIDTH = 640
+HEIGHT = 360
 FRAMERATE = 30
 
 CALIBRATION_SECONDS = 3.0
-PRESS_SECONDS = 0.5
+PRESS_SECONDS = 0.1
 
 # Since this version learns which ArUco id belongs to each physical button
 # during calibration, it only needs detections to stay reasonably close to the
