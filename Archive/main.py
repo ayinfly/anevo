@@ -1,3 +1,7 @@
+# original file, we used chatgpt to generate this
+# creates the aruco marker stuff, calibration, operation, key mapping, compatability, ui.
+# We fact checked it to make it looked good.
+
 import subprocess
 import time
 import cv2

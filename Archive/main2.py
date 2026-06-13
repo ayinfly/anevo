@@ -1,3 +1,7 @@
+# we used chatgpt to generate the new updates
+# generated pressing multiple keys
+# fact checked and made sure everything was working correctly
+
 import subprocess
 import time
 import cv2

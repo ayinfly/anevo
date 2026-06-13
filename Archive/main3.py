@@ -1,3 +1,7 @@
+# we used chatgpt to generate the new updates
+# generated colored fingertip tracking, but this wasn't used later
+# fact checked and made sure everything was working correctly
+
 import subprocess
 import time
 import cv2

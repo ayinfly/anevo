@@ -1,3 +1,5 @@
+# Final project after all iterations. Mainly builty of chatgpt generations and us checking that everything worked, matched what we were expecting, and matched the overall project itself. 
+
 import subprocess
 import time
 from collections import Counter, defaultdict

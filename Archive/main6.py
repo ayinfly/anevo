@@ -1,3 +1,7 @@
+# we used chatgpt to generate the new updates
+# generated pressing spacebar
+# fact checked and made sure everything was working correctly
+
 import subprocess
 import time
 from collections import Counter, defaultdict
